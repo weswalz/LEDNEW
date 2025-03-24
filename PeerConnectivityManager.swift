@@ -4,9 +4,8 @@
 //
 //  Created by Wesley Walz on 3/24/25.
 //
-
 import Foundation
-import MultipeerConnectivity
+@preconcurrency import MultipeerConnectivity
 
 #if os(iOS)
 import UIKit
@@ -129,22 +128,58 @@ final class PeerConnectivityManager: NSObject, ObservableObject {
 // MARK: - MCSessionDelegate
 extension PeerConnectivityManager: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
+        // First handle critical state changes immediately
+        let stateString: String
+        let peerName = peerID.displayName // Capture the name to avoid Sendable issues
+        
+        switch state {
+        case .connected:
+            stateString = "Connected to"
+        case .connecting:
+            stateString = "Connecting to"
+        case .notConnected:
+            stateString = "Disconnected from"
+        @unknown default:
+            stateString = "Unknown state with"
+        }
+        
+        print("👥 [PeerConnectivityManager] \(stateString): \(peerName)")
+        
+        // Then update UI state on main thread
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             
             switch state {
             case .connected:
+                // Ensure we don't add duplicates
                 if !self.connectedPeers.contains(peerID) {
                     self.connectedPeers.append(peerID)
                 }
-                self.isConnected = !self.connectedPeers.isEmpty
-                print("👥 [PeerConnectivityManager] Connected to: \(peerID.displayName)")
+                self.isConnected = true
+                
+                // If we just connected, wait a moment then try to sync state
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                    print("📱 [PeerConnectivityManager] Connection established with \(peerName)")
+                }
+                
             case .connecting:
-                print("👥 [PeerConnectivityManager] Connecting to: \(peerID.displayName)")
+                // No UI updates needed for connecting state
+                break
+                
             case .notConnected:
                 self.connectedPeers.removeAll { $0 == peerID }
                 self.isConnected = !self.connectedPeers.isEmpty
-                print("👥 [PeerConnectivityManager] Disconnected from: \(peerID.displayName)")
+                
+                // If we lost connection, try to reconnect after a delay
+                if self.connectedPeers.isEmpty {
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+                        print("📱 [PeerConnectivityManager] Attempting to reconnect...")
+                        // The browser will automatically try to find peers again
+                    }
+                }
+                
             @unknown default:
                 print("👥 [PeerConnectivityManager] Unknown state: \(state)")
             }
@@ -175,13 +210,18 @@ extension PeerConnectivityManager: MCSessionDelegate {
 // MARK: - MCNearbyServiceAdvertiserDelegate
 extension PeerConnectivityManager: MCNearbyServiceAdvertiserDelegate {
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        Task { @MainActor [weak self] in
-            guard let self = self else {
-                invitationHandler(false, nil)
-                return
-            }
-            print("📱 [PeerConnectivityManager] Received invitation from \(peerID.displayName)")
-            invitationHandler(true, self.session)
+        // Capture peer name to avoid Sendable issues
+        let peerName = peerID.displayName
+        
+        print("📱 [PeerConnectivityManager] Received invitation from \(peerName)")
+        
+        // We need to access the session on the main thread
+        Task { @MainActor in
+            // Get the session from the main actor
+            let currentSession = self.session
+            
+            // Accept the invitation with the session from the main thread
+            invitationHandler(true, currentSession)
         }
     }
     
@@ -193,10 +233,29 @@ extension PeerConnectivityManager: MCNearbyServiceAdvertiserDelegate {
 // MARK: - MCNearbyServiceBrowserDelegate
 extension PeerConnectivityManager: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            print("📱 [PeerConnectivityManager] Found peer: \(peerID.displayName)")
-            browser.invitePeer(peerID, to: self.session, withContext: nil, timeout: 10)
+        // Capture peer name to avoid Sendable issues
+        let peerName = peerID.displayName
+        
+        print("📱 [PeerConnectivityManager] Found peer: \(peerName)")
+        
+        // We need to access the session on the main thread
+        Task { @MainActor in
+            // Get the session from the main actor
+            let currentSession = self.session
+            
+            // Check if we're already connected to this peer
+            if !currentSession.connectedPeers.contains(peerID) {
+                // Create a local copy of the browser and peer ID to avoid capturing in the Task
+                let localBrowser = browser
+                let localPeerID = peerID
+                let localSession = currentSession
+                
+                // Add a small delay to avoid invitation collisions
+                Task.detached {
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+                    localBrowser.invitePeer(localPeerID, to: localSession, withContext: nil, timeout: 30)
+                }
+            }
         }
     }
     

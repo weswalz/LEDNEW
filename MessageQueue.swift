@@ -34,8 +34,12 @@ struct EnhancedOSCMessage: Codable, Identifiable, Hashable {
     }
     
     // Helper property to display in the UI
-    var displayText: String {
-        return "Table \(tableNumber): \(value)"
+    func displayText(useTableNumber: Bool, tableNumberLabel: String) -> String {
+        if useTableNumber {
+            return "\(tableNumberLabel) \(tableNumber): \(value)"
+        } else {
+            return value
+        }
     }
 }
 
@@ -47,7 +51,9 @@ final class EnhancedMessageQueue: ObservableObject {
     
     // For auto-expiration
     private var expirationTimers: [UUID: Timer] = [:]
-    private let expirationTime: TimeInterval = 300 // 5 minutes
+    private var expirationTime: TimeInterval {
+        return oscManager.timeoutMinutes * 60 // Convert minutes to seconds
+    }
     
     init(peerConnectivity: PeerConnectivityManager, oscManager: OSCManager) {
         self.peerConnectivity = peerConnectivity
@@ -127,6 +133,37 @@ final class EnhancedMessageQueue: ObservableObject {
                 // Broadcast status change
                 broadcastMessage(action: "update", message: updatedMessage)
             }
+        }
+    }
+    
+    // Cancel a sent message and return it to queue
+    func cancelMessage(messageId: UUID) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else {
+            print("❌ [EnhancedMessageQueue] Message not found for cancellation")
+            return
+        }
+        
+        var updatedMessage = messages[index]
+        
+        // Only cancel if message is currently sent
+        if updatedMessage.status == .sent {
+            // Clear the screen
+            oscManager.clearScreen()
+            
+            // Update status back to queued
+            updatedMessage.status = .queued
+            messages[index] = updatedMessage
+            
+            // Cancel the expiration timer
+            if let timer = expirationTimers[messageId] {
+                timer.invalidate()
+                expirationTimers[messageId] = nil
+            }
+            
+            // Broadcast status change to peers
+            broadcastMessage(action: "update", message: updatedMessage)
+            
+            print("🔄 [EnhancedMessageQueue] Message cancelled and returned to queue")
         }
     }
     

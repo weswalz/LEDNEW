@@ -8,8 +8,10 @@
 import SwiftUI
 
 struct EnhancedContentView: View {
+    // Use a single instance of each manager
     @StateObject private var peerConnectivity = PeerConnectivityManager()
-    @State private var oscManager = OSCManager()
+    // Use @StateObject for OSCManager to prevent deinitialization
+    @StateObject private var oscManager = OSCManager()
     @StateObject private var viewModel: EnhancedViewModel
     
     // View State
@@ -19,45 +21,34 @@ struct EnhancedContentView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var isProcessing = false
+    @State private var showSetup = true // Show setup screen by default
+    
+    // Timer for updating progress bars
+    @State private var timerCounter = 0
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     init() {
-        let peerConn = PeerConnectivityManager()
-        let osc = OSCManager()
-        let messageQueue = EnhancedMessageQueue(peerConnectivity: peerConn, oscManager: osc)
+        // Create StateObject instances first
+        let peerConnManager = PeerConnectivityManager()
+        let oscMan = OSCManager()
         
-        // Use _StateObject to initialize properly
-        _peerConnectivity = StateObject(wrappedValue: peerConn)
-        // OSCManager is now @Observable, so we use @State instead of @StateObject
-        self.oscManager = osc
+        // Store references to the StateObjects
+        _peerConnectivity = StateObject(wrappedValue: peerConnManager)
+        _oscManager = StateObject(wrappedValue: oscMan)
+        
+        // Create message queue using the SAME instances
+        let messageQueue = EnhancedMessageQueue(
+            peerConnectivity: peerConnManager,
+            oscManager: oscMan
+        )
+        
+        // Initialize view model with the message queue
         _viewModel = StateObject(wrappedValue: EnhancedViewModel(messageQueue: messageQueue))
     }
     
     var body: some View {
-        VStack(spacing: 10) {
-            // 1) Header at top, no extra top padding
-            headerView
-            
-            // 2) Instructions bar, 10px below header
-            instructionsBar
-            
-            // 3) Scrollable message list, 10px below instructions
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(viewModel.messages, id: \.id) { message in
-                        messageCard(message)
-                    }
-                }
-                .padding(.horizontal, 10)
-            }
-            .overlay {
-                if viewModel.messages.isEmpty {
-                    Text("No messages in queue")
-                        .foregroundColor(.white.opacity(0.6))
-                        .font(.system(size: 16))
-                }
-            }
-        }
-        .background(
+        ZStack {
+            // Background gradient
             LinearGradient(
                 gradient: Gradient(colors: [
                     Color(hex: "#0f172a"),
@@ -68,22 +59,65 @@ struct EnhancedContentView: View {
                 endPoint: .bottomTrailing
             )
             .ignoresSafeArea()
-        )
-        .sheet(isPresented: $showingNewMessageSheet) {
-            newMessageSheet
-        }
-        .alert("Error", isPresented: $showingError) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(errorMessage)
-        }
-        .overlay {
-            if isProcessing {
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    .scaleEffect(1.5)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.black.opacity(0.3))
+            
+            if showSetup {
+                // Show setup screen
+                SetupView(oscManager: oscManager, showSetup: $showSetup)
+            } else {
+                // Main app view
+                VStack(spacing: 10) {
+                    // 1) Header at top, no extra top padding
+                    headerView
+                    
+                    // 2) Instructions bar, 10px below header
+                    instructionsBar
+                    
+                    // 3) Scrollable message list, 10px below instructions
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            ForEach(viewModel.messages, id: \.id) { message in
+                                messageCard(message)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                    }
+                    .overlay {
+                        if viewModel.messages.isEmpty {
+                            VStack {
+                                Text("No messages in queue")
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .font(.system(size: 18, weight: .medium))
+                                    .padding(.vertical, 20)
+                                    .frame(maxWidth: .infinity)
+                                    .background(Color.black.opacity(0.3))
+                                    .cornerRadius(8)
+                                    .padding(.horizontal, 20)
+                                    .padding(.top, 40)
+                            }
+                        }
+                    }
+                }
+                .sheet(isPresented: $showingNewMessageSheet) {
+                    newMessageSheet
+                }
+                .alert("Error", isPresented: $showingError) {
+                    Button("OK", role: .cancel) { }
+                } message: {
+                    Text(errorMessage)
+                }
+                .overlay {
+                    if isProcessing {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color.black.opacity(0.3))
+                    }
+                }
+                .onReceive(timer) { _ in
+                    // Update the timer counter to force UI refresh for progress bars
+                    timerCounter += 1
+                }
             }
         }
     }
@@ -101,16 +135,18 @@ struct EnhancedContentView: View {
                 Spacer()
                 
                 Button(action: {
-                    // Reload app functionality
+                    // Show setup screen again
+                    showSetup = true
                 }) {
-                    Text("Reload App")
+                    Text("Setup")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(Color(hex: "EF4444"))
+                        .background(Color(hex: "3B82F6"))
                         .cornerRadius(6)
                 }
+                .buttonStyle(PlainButtonStyle())
                 
                 Button(action: {
                     Task {
@@ -127,6 +163,7 @@ struct EnhancedContentView: View {
                         .background(Color(hex: "F97316"))
                         .cornerRadius(6)
                 }
+                .buttonStyle(PlainButtonStyle())
                 .disabled(isProcessing)
                 
                 Button(action: {
@@ -140,18 +177,19 @@ struct EnhancedContentView: View {
                         .background(Color(hex: "EC4899"))
                         .cornerRadius(6)
                 }
+                .buttonStyle(PlainButtonStyle())
                 .disabled(isProcessing)
             }
             
             // Status row
             HStack(spacing: 20) {
-                // Connection status
+                // Peer Connection status
                 HStack(spacing: 6) {
                     Circle()
                         .fill(peerConnectivity.isConnected ? Color(hex: "10B981") : Color(hex: "EF4444"))
                         .frame(width: 8, height: 8)
                     
-                    Text("CONNECTED")
+                    Text("PEER CONNECTED")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(peerConnectivity.isConnected ? Color(hex: "10B981") : Color(hex: "EF4444"))
@@ -163,29 +201,16 @@ struct EnhancedContentView: View {
                         .fill(oscManager.isConnected ? Color(hex: "10B981") : Color(hex: "EF4444"))
                         .frame(width: 8, height: 8)
                     
-                    Text("OSC CONNECTED")
+                    Text("RESOLUME CONNECTED")
                         .font(.caption)
                         .fontWeight(.semibold)
                         .foregroundColor(oscManager.isConnected ? Color(hex: "10B981") : Color(hex: "EF4444"))
-                }
-                
-                // Resolume status
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(peerConnectivity.resolumeFound ? Color(hex: "10B981") : Color(hex: "EF4444"))
-                        .frame(width: 8, height: 8)
-                    
-                    Text("RESOLUME FOUND")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundColor(peerConnectivity.resolumeFound ? Color(hex: "10B981") : Color(hex: "EF4444"))
                 }
                 
                 Spacer()
             }
         }
         .padding(10)
-        .background(Color.black.opacity(0.3))
         .overlay(
             Rectangle()
                 .frame(height: 1)
@@ -197,6 +222,7 @@ struct EnhancedContentView: View {
     private var instructionsBar: some View {
         VStack(spacing: 0) {
             HStack {
+                Spacer()
                 Text("INSTRUCTIONS: Queue message → Send to LED wall")
                     .foregroundColor(.white.opacity(0.8))
                     .font(.system(size: 16, weight: .medium))
@@ -212,13 +238,22 @@ struct EnhancedContentView: View {
         .background(Color.black.opacity(0.2))
     }
     
+    @MainActor
     private func messageCard(_ message: EnhancedOSCMessage) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Table \(message.tableNumber)")
-                    .font(.headline)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
+                if oscManager.useTableNumber {
+                    Text("\(oscManager.tableNumberLabel) \(message.tableNumber)")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                } else {
+                    // If not using table numbers, just show a generic message label
+                    Text("Message")
+                        .font(.headline)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                }
                 
                 Spacer()
                 
@@ -233,21 +268,31 @@ struct EnhancedContentView: View {
                                 isProcessing = false
                             }
                         }) {
-                            Text("Delete")
+                            Text("DELETE")
                                 .font(.footnote)
-                                .fontWeight(.medium)
-                                .foregroundColor(Color(hex: "EF4444"))
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(Color(hex: "EF4444"))
+                                .foregroundColor(.white)
+                                .cornerRadius(5)
                         }
+                        .buttonStyle(BorderlessButtonStyle())
                         .disabled(isProcessing)
                         
                         Button(action: {
                             // Edit message functionality
                         }) {
-                            Text("Edit")
+                            Text("EDIT")
                                 .font(.footnote)
-                                .fontWeight(.medium)
-                                .foregroundColor(Color(hex: "F97316"))
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(Color(hex: "F97316"))
+                                .foregroundColor(.white)
+                                .cornerRadius(5)
                         }
+                        .buttonStyle(BorderlessButtonStyle())
                         .disabled(isProcessing)
                         
                         Button(action: {
@@ -266,14 +311,29 @@ struct EnhancedContentView: View {
                                 .foregroundColor(.white)
                                 .cornerRadius(5)
                         }
+                        .buttonStyle(BorderlessButtonStyle())
                         .disabled(isProcessing)
                     }
                     
                 case .sent:
-                    Text("DISPLAYED")
-                        .font(.footnote)
-                        .fontWeight(.semibold)
-                        .foregroundColor(Color(hex: "10B981"))
+                    Button(action: {
+                        Task {
+                            isProcessing = true
+                            await viewModel.cancelMessage(message.id)
+                            isProcessing = false
+                        }
+                    }) {
+                        Text("CANCEL MESSAGE")
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color(hex: "10B981"))
+                            .foregroundColor(.white)
+                            .cornerRadius(5)
+                    }
+                    .buttonStyle(BorderlessButtonStyle())
+                    .disabled(isProcessing)
                     
                 case .expired:
                     Text("EXPIRED")
@@ -291,6 +351,66 @@ struct EnhancedContentView: View {
         .padding(16)
         .background(messageBackgroundColor(for: message.status))
         .cornerRadius(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(
+                    message.status == .sent ? Color(hex: "10B981") : Color.clear,
+                    lineWidth: message.status == .sent ? 1 : 0
+                )
+        )
+        .overlay(
+            // Add progress bar for sent messages
+            Group {
+                if message.status == .sent {
+                    VStack {
+                        Spacer()
+                        
+                        VStack(spacing: 4) {
+                            // Time remaining indicator
+                            HStack {
+                                Spacer()
+                                
+                                let elapsedTime = Date().timeIntervalSince(message.timestamp)
+                                let totalTime = oscManager.timeoutMinutes * 60 // in seconds
+                                let remainingTime = max(0, totalTime - elapsedTime)
+                                let minutes = Int(remainingTime) / 60
+                                let seconds = Int(remainingTime) % 60
+                                
+                                Text("\(minutes):\(String(format: "%02d", seconds)) remaining")
+                                    .font(.caption2)
+                                    .foregroundColor(Color(hex: "10B981"))
+                                    .padding(.bottom, 2)
+                            }
+                            .padding(.horizontal, 16)
+                            
+                            // Calculate remaining time percentage
+                            GeometryReader { geometry in
+                                let totalWidth = geometry.size.width
+                                let elapsedTime = Date().timeIntervalSince(message.timestamp)
+                                let totalTime = oscManager.timeoutMinutes * 60 // in seconds
+                                let remainingTime = max(0, totalTime - elapsedTime)
+                                let percentage = remainingTime / totalTime
+                                
+                                // Progress bar
+                                ZStack(alignment: .leading) {
+                                    // Background
+                                    Rectangle()
+                                        .fill(Color.white.opacity(0.2))
+                                        .frame(width: totalWidth, height: 4)
+                                    
+                                    // Progress
+                                    Rectangle()
+                                        .fill(Color(hex: "10B981"))
+                                        .frame(width: totalWidth * CGFloat(percentage), height: 4)
+                                }
+                            }
+                            .frame(height: 4)
+                        }
+                    }
+                    .padding(.horizontal, -16)
+                }
+            }
+        )
     }
     
     private func messageBackgroundColor(for status: EnhancedOSCMessage.MessageStatus) -> Color {
@@ -298,12 +418,14 @@ struct EnhancedContentView: View {
         case .queued:
             return Color(hex: "0F172A").opacity(0.7)
         case .sent:
-            return Color(hex: "064E3B").opacity(0.3)
+            // Green-tinted background for active messages
+            return Color(hex: "10B981").opacity(0.1)
         case .expired:
             return Color(hex: "1F2937").opacity(0.5)
         }
     }
     
+    @MainActor
     private var newMessageSheet: some View {
         ZStack {
             // Dark background
@@ -317,76 +439,110 @@ struct EnhancedContentView: View {
                     .fontWeight(.bold)
                     .foregroundColor(Color(hex: "3B82F6"))
                 
-                // Table number field
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("TABLE NUMBER")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(Color(hex: "94A3B8"))
-                    
-                    TextField("4", text: $tableNumber)
-                        .font(.body)
-                        .padding()
-                        .background(Color(hex: "1E293B"))
-                        .foregroundColor(.white)
-                        .cornerRadius(8)
-                        #if os(iOS)
-                        .keyboardType(.numberPad)
-                        #endif
+                // Table number field (only if enabled in settings)
+                if oscManager.useTableNumber {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(oscManager.tableNumberLabel.uppercased())
+                            .font(.system(size: 16))
+                            .fontWeight(.semibold)
+                            .foregroundColor(Color(hex: "#ffffff"))
+                        
+                        // Simple TextField with no borders
+                        TextField("4", text: $tableNumber)
+                            .font(.system(size: 20))
+                            .padding(.vertical, 16)
+                            .padding(.horizontal, 12)
+                            .foregroundColor(.white)
+                            .background(Color.black.opacity(0.2))
+                            .cornerRadius(4)
+                            #if os(iOS)
+                            .keyboardType(.numberPad)
+                            .textInputAutocapitalization(oscManager.forceCaps ? .characters : .never)
+                            #endif
+                            .onChange(of: tableNumber) { oldValue, newValue in
+                                if oscManager.forceCaps {
+                                    tableNumber = newValue.uppercased()
+                                }
+                            }
+                            // Remove focus border
+                            .buttonStyle(PlainButtonStyle())
+                            .border(Color.clear)
+                    }
                 }
                 
                 // Message field
                 VStack(alignment: .leading, spacing: 8) {
                     Text("MESSAGE")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundColor(Color(hex: "94A3B8"))
+                        .font(.system(size: 16))
+                        .fontWeight(.semibold)
+                        .foregroundColor(Color(hex: "#ffffff"))
                     
+                    // Simple TextField with no borders
                     TextField("HAPPY BIRTHDAY!", text: $messageText)
-                        .font(.body)
-                        .padding()
-                        .background(Color(hex: "1E293B"))
+                        .font(.system(size: 20))
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, 12)
                         .foregroundColor(.white)
-                        .cornerRadius(8)
+                        .background(Color.black.opacity(0.2))
+                        .cornerRadius(4)
+                        #if os(iOS)
+                        .textInputAutocapitalization(oscManager.forceCaps ? .characters : .never)
+                        #endif
+                        .onChange(of: messageText) { oldValue, newValue in
+                            if oscManager.forceCaps {
+                                messageText = newValue.uppercased()
+                            }
+                        }
+                        // Remove focus border
+                        .buttonStyle(PlainButtonStyle())
+                        .border(Color.clear)
                 }
                 
                 // Buttons
                 HStack {
-                    Button("Cancel") {
+                    Button(action: {
                         showingNewMessageSheet = false
+                    }) {
+                        Text("CANCEL")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color(hex: "6B7280"))
+                            .cornerRadius(5)
                     }
-                    .font(.headline)
-                    .padding()
-                    .foregroundColor(Color(hex: "94A3B8"))
+                    .buttonStyle(PlainButtonStyle())
                     
                     Spacer()
                     
-                    Button("Queue Message") {
-                        if !messageText.isEmpty && !tableNumber.isEmpty {
+                    Button(action: {
+                        let canProceed = messageText.isEmpty ? false :
+                                        (oscManager.useTableNumber ? !tableNumber.isEmpty : true)
+                        
+                        if canProceed {
                             Task {
                                 isProcessing = true
-                                await viewModel.addMessage(value: messageText, tableNumber: tableNumber)
+                                await viewModel.addMessage(
+                                    value: messageText,
+                                    tableNumber: oscManager.useTableNumber ? tableNumber : "N/A"
+                                )
                                 messageText = ""
                                 tableNumber = ""
                                 showingNewMessageSheet = false
                                 isProcessing = false
                             }
                         }
+                    }) {
+                        Text("QUEUE MESSAGE")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(hex: "#ffffff"))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color(hex: "EC4899"))
+                            .cornerRadius(6)
                     }
-                    .font(.headline)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 14)
-                    .background(
-                        LinearGradient(
-                            gradient: Gradient(colors: [Color(hex: "D946EF"), Color(hex: "EC4899")]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .foregroundColor(.white)
-                    .cornerRadius(8)
-                    .disabled(messageText.isEmpty || tableNumber.isEmpty || isProcessing)
+                    .buttonStyle(PlainButtonStyle())
+                    .disabled(messageText.isEmpty || (oscManager.useTableNumber && tableNumber.isEmpty) || isProcessing)
                 }
             }
             .padding(24)
@@ -425,6 +581,10 @@ final class EnhancedViewModel: ObservableObject {
     
     func deleteMessage(_ id: UUID) async {
         messageQueue.remove(messageId: id)
+    }
+    
+    func cancelMessage(_ id: UUID) async {
+        messageQueue.cancelMessage(messageId: id)
     }
     
     func clearScreen() async {
